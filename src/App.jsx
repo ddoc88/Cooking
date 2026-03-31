@@ -1,23 +1,33 @@
 import React, { useState, useEffect } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
-import Tesseract from "tesseract.js";
 
-// Set PDF worker for Vite
+// ✅ FIX: worker for Vite
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/legacy/build/pdf.worker.min.js",
   import.meta.url
 ).toString();
 
+// ✅ Load Tesseract dynamically from CDN (fixes Vercel build error)
+let Tesseract = null;
+async function loadTesseract() {
+  if (!Tesseract) {
+    Tesseract = await import(
+      /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"
+    );
+  }
+  return Tesseract;
+}
+
 export default function App() {
-  const [page, setPage] = useState("home"); // home, recipes, cook, add
-  const [theme, setTheme] = useState("light");
+  const [page, setPage] = useState("home");
   const [recipes, setRecipes] = useState([]);
   const [currentRecipe, setCurrentRecipe] = useState(null);
-  const [importing, setImporting] = useState(false);
+  const [theme, setTheme] = useState("light");
+  const [loading, setLoading] = useState(false);
 
   const apiKey = import.meta.env.VITE_OPENAPI_KEY;
 
-  // Load recipes from localStorage
+  // Load saved recipes
   useEffect(() => {
     const stored = JSON.parse(localStorage.getItem("recipes") || "[]");
     setRecipes(stored);
@@ -28,32 +38,33 @@ export default function App() {
     localStorage.setItem("recipes", JSON.stringify(newRecipes));
   };
 
-  // PDF Import via File
+  // ✅ PDF IMPORT (PDF.js + OCR fallback)
   const handlePDFUpload = async (file) => {
     if (!file) return;
-    setImporting(true);
+
+    setLoading(true);
     let fullText = "";
 
     try {
-      // Try using pdfjs first
+      // Try PDF text extraction first
       const typedArray = new Uint8Array(await file.arrayBuffer());
       const pdf = await pdfjsLib.getDocument(typedArray).promise;
 
       for (let i = 1; i <= pdf.numPages; i++) {
-        const pageObj = await pdf.getPage(i);
-        const textContent = await pageObj.getTextContent();
-        fullText += textContent.items.map((t) => t.str).join(" ") + " ";
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        fullText += content.items.map((t) => t.str).join(" ") + " ";
       }
 
-      // If pdfjs fails to extract (empty), fallback to OCR
+      // Fallback to OCR if empty
       if (!fullText.trim()) {
-        const { data } = await Tesseract.recognize(file, "eng", {
-          logger: (m) => console.log(m),
-        });
+        console.log("Using OCR fallback...");
+        const tess = await loadTesseract();
+        const { data } = await tess.recognize(file, "eng");
         fullText = data.text;
       }
 
-      // Call OpenAI to convert to JSON
+      // Send to OpenAI
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -65,11 +76,11 @@ export default function App() {
           messages: [
             {
               role: "user",
-              content: `Extract a recipe from this text into JSON format:
+              content: `Extract a recipe into JSON:
 {
-  "name": "Recipe Name",
-  "ingredients": ["ingredient 1 10g", "ingredient 2 200ml"],
-  "steps": ["Step 1", "Step 2 with time in seconds like 120s"]
+"name": "Recipe Name",
+"ingredients": ["ingredient 1 10g"],
+"steps": ["Step 1"]
 }
 Text: ${fullText}`,
             },
@@ -78,163 +89,154 @@ Text: ${fullText}`,
       });
 
       const data = await response.json();
-      const text = data.choices[0].message.content;
-      const recipe = JSON.parse(text);
+      const recipe = JSON.parse(data.choices[0].message.content);
 
       saveRecipes([...recipes, recipe]);
       alert("Recipe imported!");
     } catch (err) {
-      console.error("Error importing recipe:", err);
-      alert("Failed to import recipe.");
+      console.error(err);
+      alert("Failed to import recipe");
     }
-    setImporting(false);
+
+    setLoading(false);
   };
 
   const deleteRecipe = (index) => {
-    if (window.confirm("Delete this recipe?")) {
-      const newRecipes = recipes.filter((_, i) => i !== index);
-      saveRecipes(newRecipes);
-    }
+    if (!confirm("Delete this recipe?")) return;
+    const updated = recipes.filter((_, i) => i !== index);
+    saveRecipes(updated);
   };
 
-  const editRecipe = (index, updated) => {
-    const newRecipes = [...recipes];
-    newRecipes[index] = updated;
-    saveRecipes(newRecipes);
+  const toggleTheme = () =>
+    setTheme(theme === "light" ? "dark" : "light");
+
+  const styles = {
+    container: {
+      padding: 20,
+      minHeight: "100vh",
+      background: theme === "dark" ? "#111" : "#f9f9f9",
+      color: theme === "dark" ? "#fff" : "#000",
+      fontFamily: "sans-serif",
+    },
+    button: {
+      width: "100%",
+      padding: "10px",
+      margin: "10px 0",
+      borderRadius: "8px",
+      border: "none",
+      cursor: "pointer",
+    },
+    card: {
+      background: theme === "dark" ? "#222" : "#fff",
+      padding: 15,
+      borderRadius: 10,
+      marginBottom: 10,
+      boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
+    },
   };
 
-  const toggleTheme = () => setTheme(theme === "light" ? "dark" : "light");
-
-  // ------------------- RENDER PAGES -------------------
-
+  // ------------------ HOME ------------------
   if (page === "home") {
     return (
-      <div
-        style={{
-          padding: 20,
-          fontFamily: "sans-serif",
-          minHeight: "100vh",
-          background: theme === "dark" ? "#111" : "#f9f9f9",
-        }}
-      >
+      <div style={styles.container}>
         <h1>Cooking App</h1>
-        <button
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-          onClick={() => setPage("recipes")}
-        >
+        <button style={styles.button} onClick={() => setPage("recipes")}>
           Recipes
         </button>
-        <button
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-          onClick={() => setPage("add")}
-        >
+        <button style={styles.button} onClick={() => setPage("add")}>
           + Add Recipe
         </button>
-        <button
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-          onClick={toggleTheme}
-        >
+        <button style={styles.button} onClick={toggleTheme}>
           Toggle Theme
         </button>
       </div>
     );
   }
 
+  // ------------------ ADD ------------------
   if (page === "add") {
     return (
-      <div style={{ padding: 20 }}>
+      <div style={styles.container}>
         <h1>Add Recipe</h1>
-        <input
-          type="file"
-          onChange={(e) => handlePDFUpload(e.target.files[0])}
-        />
-        {importing && <p>Importing PDF...</p>}
-        <button
-          style={{ display: "block", marginTop: 10 }}
-          onClick={() => setPage("home")}
-        >
+        <input type="file" onChange={(e) => handlePDFUpload(e.target.files[0])} />
+        {loading && <p>Processing PDF...</p>}
+        <button style={styles.button} onClick={() => setPage("home")}>
           Back
         </button>
       </div>
     );
   }
 
+  // ------------------ RECIPES ------------------
   if (page === "recipes") {
     return (
-      <div style={{ padding: 20 }}>
+      <div style={styles.container}>
         <h1>Saved Recipes</h1>
+
+        {recipes.length === 0 && <p>No recipes yet</p>}
+
         {recipes.map((r, i) => (
-          <div
-            key={i}
-            style={{
-              border: "1px solid #ccc",
-              margin: "10px 0",
-              borderRadius: 10,
-              padding: 10,
-            }}
-          >
-            <h2>{r.name}</h2>
+          <div key={i} style={styles.card}>
+            <h3>{r.name}</h3>
+
             <button
-              style={{ background: "green", color: "white", width: "100%" }}
+              style={{ ...styles.button, background: "green", color: "white" }}
               onClick={() => {
                 setCurrentRecipe(r);
                 setPage("cook");
               }}
             >
-              Open Recipe
+              Open
             </button>
+
             <button
-              style={{
-                background: "orange",
-                color: "white",
-                marginTop: 5,
-                width: "49%",
-              }}
-              onClick={() => editRecipe(i, r)}
-            >
-              Edit
-            </button>
-            <button
-              style={{
-                background: "red",
-                color: "white",
-                marginTop: 5,
-                width: "49%",
-              }}
+              style={{ ...styles.button, background: "red", color: "white" }}
               onClick={() => deleteRecipe(i)}
             >
               Delete
             </button>
           </div>
         ))}
-        <button
-          onClick={() => setPage("add")}
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-        >
-          + Add Recipe
+
+        <button style={styles.button} onClick={() => setPage("home")}>
+          Back
         </button>
-        <button onClick={() => setPage("home")}>Back</button>
       </div>
     );
   }
 
+  // ------------------ COOK ------------------
   if (page === "cook") {
+    if (!currentRecipe) {
+      return (
+        <div style={styles.container}>
+          <h1>Error loading recipe</h1>
+          <button onClick={() => setPage("recipes")}>Back</button>
+        </div>
+      );
+    }
+
     return (
-      <div style={{ padding: 20 }}>
+      <div style={styles.container}>
         <h1>{currentRecipe.name}</h1>
+
         <h2>Ingredients</h2>
         <ul>
-          {currentRecipe.ingredients.map((i, idx) => (
+          {currentRecipe.ingredients?.map((i, idx) => (
             <li key={idx}>{i}</li>
           ))}
         </ul>
+
         <h2>Steps</h2>
         <ol>
-          {currentRecipe.steps.map((s, idx) => (
+          {currentRecipe.steps?.map((s, idx) => (
             <li key={idx}>{s}</li>
           ))}
         </ol>
-        <button onClick={() => setPage("recipes")}>Back</button>
+
+        <button style={styles.button} onClick={() => setPage("recipes")}>
+          Back
+        </button>
       </div>
     );
   }

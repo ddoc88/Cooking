@@ -1,15 +1,11 @@
 import React, { useState, useEffect } from "react";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf"; // legacy build for Vite
-import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.entry";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 export default function App() {
   const [page, setPage] = useState("home"); // home, recipes, cook, add
   const [theme, setTheme] = useState("light");
   const [recipes, setRecipes] = useState([]);
   const [currentRecipe, setCurrentRecipe] = useState(null);
-  const [importedPDF, setImportedPDF] = useState(null);
+  const [pdfURL, setPdfURL] = useState("");
 
   const apiKey = import.meta.env.VITE_OPENAPI_KEY; // Vercel environment variable
 
@@ -24,56 +20,62 @@ export default function App() {
     localStorage.setItem("recipes", JSON.stringify(newRecipes));
   };
 
-  const handlePDFUpload = async (file) => {
-    setImportedPDF(file);
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const typedArray = new Uint8Array(e.target.result);
-      const pdf = await pdfjsLib.getDocument(typedArray).promise;
-      let fullText = "";
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        fullText += textContent.items.map((t) => t.str).join(" ") + " ";
-      }
+  // Handle PDF URL import
+  const handlePDFUrl = async (url) => {
+    if (!url) return alert("Enter a PDF URL");
 
-      try {
-        const response = await fetch(
-          "https://api.openai.com/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-              model: "gpt-4",
-              messages: [
-                {
-                  role: "user",
-                  content: `Extract a recipe from this text into JSON:
+    try {
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      const text = await pdfToText(arrayBuffer);
+
+      // Call OpenAI API
+      const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4",
+          messages: [
+            {
+              role: "user",
+              content: `Extract a recipe from this text into JSON:
 {
 "name": "Recipe Name",
 "ingredients": ["ingredient 1 10g", "ingredient 2 200ml"],
 "steps": ["Step 1", "Step 2 with time in seconds like 120s"]
 }
-Text: ${fullText}`,
-                },
-              ],
-            }),
-          }
-        );
-        const data = await response.json();
-        const text = data.choices[0].message.content;
-        const recipe = JSON.parse(text);
-        saveRecipes([...recipes, recipe]);
-        alert("Recipe imported!");
-      } catch (err) {
-        console.error("PDF/AI error:", err);
-        alert("Failed to import recipe.");
-      }
-    };
-    reader.readAsArrayBuffer(file);
+Text: ${text}`
+            }
+          ]
+        }),
+      });
+      const data = await aiResponse.json();
+      const recipe = JSON.parse(data.choices[0].message.content);
+
+      saveRecipes([...recipes, recipe]);
+      alert("Recipe imported!");
+      setPage("recipes");
+      setPdfURL("");
+    } catch (err) {
+      console.error("PDF/AI error:", err);
+      alert("Failed to import recipe");
+    }
+  };
+
+  // Simple text extraction from PDF ArrayBuffer (without worker)
+  const pdfToText = async (arrayBuffer) => {
+    const pdfjsLib = await import("pdfjs-dist/build/pdf");
+    const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+    let fullText = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      fullText += textContent.items.map((t) => t.str).join(" ") + " ";
+    }
+    return fullText;
   };
 
   const deleteRecipe = (index) => {
@@ -87,142 +89,94 @@ Text: ${fullText}`,
     saveRecipes(newRecipes);
   };
 
-  const toggleTheme = () =>
-    setTheme(theme === "light" ? "dark" : "light");
+  const toggleTheme = () => setTheme(theme === "light" ? "dark" : "light");
 
-  // ---------- Render Pages ----------
+  // --- Page Render ---
   if (page === "home") {
     return (
-      <div
-        style={{
-          padding: "20px",
-          fontFamily: "sans-serif",
-          background: theme === "dark" ? "#111" : "#f9f9f9",
-          minHeight: "100vh",
-        }}
-      >
-        <h1>Cooking App</h1>
-        <button
-          onClick={() => setPage("recipes")}
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-        >
-          Recipes
-        </button>
-        <button
-          onClick={() => setPage("add")}
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-        >
-          + Add Recipe
-        </button>
-        <button
-          onClick={toggleTheme}
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-        >
-          Toggle Theme
-        </button>
+      <div style={{
+        padding: 20,
+        fontFamily: "sans-serif",
+        background: theme === "dark" ? "#111" : "#f9f9f9",
+        minHeight: "100vh"
+      }}>
+        <h1 style={{ textAlign: "center" }}>Cooking App</h1>
+        <button onClick={() => setPage("recipes")} style={buttonStyle}>📖 Recipes</button>
+        <button onClick={() => setPage("add")} style={buttonStyle}>➕ Add Recipe</button>
+        <button onClick={toggleTheme} style={buttonStyle}>🌓 Toggle Theme</button>
       </div>
     );
   }
 
   if (page === "add") {
     return (
-      <div style={{ padding: "20px" }}>
+      <div style={{ padding: 20 }}>
         <h1>Add Recipe</h1>
         <input
           type="text"
           placeholder="Recipe Name"
           id="recipeName"
-          style={{ width: "100%", marginBottom: "10px" }}
+          style={{ width: "100%", marginBottom: 10 }}
         />
-        <input type="file" onChange={(e) => handlePDFUpload(e.target.files[0])} />
-        <button
-          style={{ display: "block", marginTop: "10px" }}
-          onClick={() => setPage("home")}
-        >
-          Back
-        </button>
+        <input
+          type="text"
+          placeholder="Enter PDF URL"
+          value={pdfURL}
+          onChange={(e) => setPdfURL(e.target.value)}
+          style={{ width: "100%", marginBottom: 10 }}
+        />
+        <button style={buttonStyle} onClick={() => handlePDFUrl(pdfURL)}>Import PDF</button>
+        <button style={buttonStyle} onClick={() => setPage("home")}>Back</button>
       </div>
     );
   }
 
   if (page === "recipes") {
     return (
-      <div style={{ padding: "20px" }}>
+      <div style={{ padding: 20 }}>
         <h1>Saved Recipes</h1>
         {recipes.map((r, i) => (
-          <div
-            key={i}
-            style={{
-              border: "1px solid #ccc",
-              margin: "10px 0",
-              borderRadius: "10px",
-              padding: "10px",
-            }}
-          >
+          <div key={i} style={{ border: "1px solid #ccc", margin: "10px 0", borderRadius: 10, padding: 10 }}>
             <h2>{r.name}</h2>
-            <button
-              style={{ background: "green", color: "white", width: "100%" }}
-              onClick={() => {
-                setCurrentRecipe(r);
-                setPage("cook");
-              }}
-            >
-              Open Recipe
-            </button>
-            <button
-              style={{
-                background: "orange",
-                color: "white",
-                marginTop: "5px",
-                width: "49%",
-              }}
-              onClick={() => editRecipe(i, r)}
-            >
-              Edit
-            </button>
-            <button
-              style={{
-                background: "red",
-                color: "white",
-                marginTop: "5px",
-                width: "49%",
-              }}
-              onClick={() => deleteRecipe(i)}
-            >
-              Delete
-            </button>
+            <button style={{ ...buttonStyle, background: "green" }} onClick={() => { setCurrentRecipe(r); setPage("cook"); }}>Open Recipe</button>
+            <button style={{ ...buttonStyle, background: "orange", marginTop: 5 }} onClick={() => editRecipe(i,r)}>Edit</button>
+            <button style={{ ...buttonStyle, background: "red", marginTop: 5 }} onClick={() => deleteRecipe(i)}>Delete</button>
           </div>
         ))}
-        <button
-          onClick={() => setPage("add")}
-          style={{ display: "block", margin: "10px 0", width: "100%" }}
-        >
-          + Add Recipe
-        </button>
+        <button onClick={() => setPage("add")} style={buttonStyle}>+ Add Recipe</button>
+        <button onClick={() => setPage("home")} style={buttonStyle}>Back Home</button>
       </div>
     );
   }
 
   if (page === "cook") {
     return (
-      <div style={{ padding: "20px" }}>
+      <div style={{ padding: 20 }}>
         <h1>{currentRecipe.name}</h1>
         <h2>Ingredients</h2>
         <ul>
-          {currentRecipe.ingredients.map((i, idx) => (
-            <li key={idx}>{i}</li>
-          ))}
+          {currentRecipe.ingredients.map((i, idx) => <li key={idx}>{i}</li>)}
         </ul>
         <h2>Steps</h2>
         <ol>
-          {currentRecipe.steps.map((s, idx) => (
-            <li key={idx}>{s}</li>
-          ))}
+          {currentRecipe.steps.map((s, idx) => <li key={idx}>{s}</li>)}
         </ol>
-        <button onClick={() => setPage("recipes")}>Back</button>
+        <button style={buttonStyle} onClick={() => setPage("recipes")}>Back</button>
       </div>
     );
   }
 
   return <div>Unknown page</div>;
 }
+
+// --- Styles ---
+const buttonStyle = {
+  display: "block",
+  margin: "10px 0",
+  width: "100%",
+  padding: 10,
+  fontSize: 16,
+  borderRadius: 6,
+  border: "none",
+  cursor: "pointer"
+};

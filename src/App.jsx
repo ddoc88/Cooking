@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from "react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import pdfjsWorker from "pdfjs-dist/build/pdf.worker.js?worker"; // fixed for Vite
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf"; // legacy build for Vite
+import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.entry";
 
-GlobalWorkerOptions.workerSrc = pdfjsWorker;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 export default function App() {
   const [page, setPage] = useState("home"); // home, recipes, cook, add
   const [theme, setTheme] = useState("light");
   const [recipes, setRecipes] = useState([]);
   const [currentRecipe, setCurrentRecipe] = useState(null);
+  const [importedPDF, setImportedPDF] = useState(null);
 
-  const OPENAI_API_KEY = import.meta.env.VITE_OPENAPI_KEY; // Vercel ENV
+  const apiKey = import.meta.env.VITE_OPENAPI_KEY; // Vercel environment variable
 
+  // Load recipes from localStorage
   useEffect(() => {
     const stored = JSON.parse(localStorage.getItem("recipes") || "[]");
     setRecipes(stored);
@@ -22,18 +24,17 @@ export default function App() {
     localStorage.setItem("recipes", JSON.stringify(newRecipes));
   };
 
-  // PDF Import using OpenAI
   const handlePDFUpload = async (file) => {
-    if (!file) return;
+    setImportedPDF(file);
     const reader = new FileReader();
     reader.onload = async (e) => {
       const typedArray = new Uint8Array(e.target.result);
-      const pdf = await getDocument(typedArray).promise;
+      const pdf = await pdfjsLib.getDocument(typedArray).promise;
       let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        fullText += content.items.map((t) => t.str).join(" ") + " ";
+        const textContent = await page.getTextContent();
+        fullText += textContent.items.map((t) => t.str).join(" ") + " ";
       }
 
       try {
@@ -43,14 +44,14 @@ export default function App() {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${OPENAI_API_KEY}`,
+              Authorization: `Bearer ${apiKey}`,
             },
             body: JSON.stringify({
               model: "gpt-4",
               messages: [
                 {
                   role: "user",
-                  content: `Extract a recipe JSON from this text:
+                  content: `Extract a recipe from this text into JSON:
 {
 "name": "Recipe Name",
 "ingredients": ["ingredient 1 10g", "ingredient 2 200ml"],
@@ -63,10 +64,10 @@ Text: ${fullText}`,
           }
         );
         const data = await response.json();
-        const recipe = JSON.parse(data.choices[0].message.content);
+        const text = data.choices[0].message.content;
+        const recipe = JSON.parse(text);
         saveRecipes([...recipes, recipe]);
         alert("Recipe imported!");
-        setPage("recipes");
       } catch (err) {
         console.error("PDF/AI error:", err);
         alert("Failed to import recipe.");
@@ -76,7 +77,6 @@ Text: ${fullText}`,
   };
 
   const deleteRecipe = (index) => {
-    if (!window.confirm("Are you sure you want to delete this recipe?")) return;
     const newRecipes = recipes.filter((_, i) => i !== index);
     saveRecipes(newRecipes);
   };
@@ -85,33 +85,39 @@ Text: ${fullText}`,
     const newRecipes = [...recipes];
     newRecipes[index] = updated;
     saveRecipes(newRecipes);
-    setPage("recipes");
   };
 
-  const toggleTheme = () => setTheme(theme === "light" ? "dark" : "light");
+  const toggleTheme = () =>
+    setTheme(theme === "light" ? "dark" : "light");
 
-  const containerStyle = {
-    padding: 20,
-    fontFamily: "sans-serif",
-    background: theme === "dark" ? "#111" : "#f9f9f9",
-    color: theme === "dark" ? "#fff" : "#111",
-    minHeight: "100vh",
-    maxWidth: 600,
-    margin: "0 auto",
-  };
-
-  // --- PAGE RENDER ---
+  // ---------- Render Pages ----------
   if (page === "home") {
     return (
-      <div style={containerStyle}>
-        <h1 style={{ textAlign: "center" }}>Cooking App</h1>
-        <button style={{ width: "100%", margin: "10px 0" }} onClick={() => setPage("recipes")}>
+      <div
+        style={{
+          padding: "20px",
+          fontFamily: "sans-serif",
+          background: theme === "dark" ? "#111" : "#f9f9f9",
+          minHeight: "100vh",
+        }}
+      >
+        <h1>Cooking App</h1>
+        <button
+          onClick={() => setPage("recipes")}
+          style={{ display: "block", margin: "10px 0", width: "100%" }}
+        >
           Recipes
         </button>
-        <button style={{ width: "100%", margin: "10px 0" }} onClick={() => setPage("add")}>
+        <button
+          onClick={() => setPage("add")}
+          style={{ display: "block", margin: "10px 0", width: "100%" }}
+        >
           + Add Recipe
         </button>
-        <button style={{ width: "100%", margin: "10px 0" }} onClick={toggleTheme}>
+        <button
+          onClick={toggleTheme}
+          style={{ display: "block", margin: "10px 0", width: "100%" }}
+        >
           Toggle Theme
         </button>
       </div>
@@ -120,11 +126,19 @@ Text: ${fullText}`,
 
   if (page === "add") {
     return (
-      <div style={containerStyle}>
+      <div style={{ padding: "20px" }}>
         <h1>Add Recipe</h1>
-        <input type="text" placeholder="Recipe Name" id="recipeName" style={{ width: "100%", marginBottom: 10, padding: 8 }} />
-        <input type="file" accept="application/pdf" onChange={(e) => handlePDFUpload(e.target.files[0])} style={{ marginBottom: 10 }} />
-        <button style={{ width: "100%", marginTop: 10 }} onClick={() => setPage("home")}>
+        <input
+          type="text"
+          placeholder="Recipe Name"
+          id="recipeName"
+          style={{ width: "100%", marginBottom: "10px" }}
+        />
+        <input type="file" onChange={(e) => handlePDFUpload(e.target.files[0])} />
+        <button
+          style={{ display: "block", marginTop: "10px" }}
+          onClick={() => setPage("home")}
+        >
           Back
         </button>
       </div>
@@ -133,28 +147,56 @@ Text: ${fullText}`,
 
   if (page === "recipes") {
     return (
-      <div style={containerStyle}>
+      <div style={{ padding: "20px" }}>
         <h1>Saved Recipes</h1>
-        <button style={{ marginBottom: 10 }} onClick={() => setPage("home")}>
-          ⬅ Back Home
-        </button>
         {recipes.map((r, i) => (
-          <div key={i} style={{ border: "1px solid #ccc", borderRadius: 10, padding: 10, margin: "10px 0" }}>
-            <h2 style={{ fontSize: 18 }}>{r.name}</h2>
-            <button style={{ width: "100%", background: "green", color: "white", marginBottom: 5, padding: 8 }} onClick={() => { setCurrentRecipe(r); setPage("cook"); }}>
+          <div
+            key={i}
+            style={{
+              border: "1px solid #ccc",
+              margin: "10px 0",
+              borderRadius: "10px",
+              padding: "10px",
+            }}
+          >
+            <h2>{r.name}</h2>
+            <button
+              style={{ background: "green", color: "white", width: "100%" }}
+              onClick={() => {
+                setCurrentRecipe(r);
+                setPage("cook");
+              }}
+            >
               Open Recipe
             </button>
-            <div style={{ display: "flex", gap: 5 }}>
-              <button style={{ flex: 1, background: "orange", color: "white" }} onClick={() => editRecipe(i, r)}>
-                Edit
-              </button>
-              <button style={{ flex: 1, background: "red", color: "white" }} onClick={() => deleteRecipe(i)}>
-                Delete
-              </button>
-            </div>
+            <button
+              style={{
+                background: "orange",
+                color: "white",
+                marginTop: "5px",
+                width: "49%",
+              }}
+              onClick={() => editRecipe(i, r)}
+            >
+              Edit
+            </button>
+            <button
+              style={{
+                background: "red",
+                color: "white",
+                marginTop: "5px",
+                width: "49%",
+              }}
+              onClick={() => deleteRecipe(i)}
+            >
+              Delete
+            </button>
           </div>
         ))}
-        <button style={{ width: "100%", marginTop: 10 }} onClick={() => setPage("add")}>
+        <button
+          onClick={() => setPage("add")}
+          style={{ display: "block", margin: "10px 0", width: "100%" }}
+        >
           + Add Recipe
         </button>
       </div>
@@ -163,7 +205,7 @@ Text: ${fullText}`,
 
   if (page === "cook") {
     return (
-      <div style={{ ...containerStyle, paddingBottom: 50 }}>
+      <div style={{ padding: "20px" }}>
         <h1>{currentRecipe.name}</h1>
         <h2>Ingredients</h2>
         <ul>
@@ -177,9 +219,7 @@ Text: ${fullText}`,
             <li key={idx}>{s}</li>
           ))}
         </ol>
-        <button style={{ width: "100%", marginTop: 10 }} onClick={() => setPage("recipes")}>
-          Back to Recipes
-        </button>
+        <button onClick={() => setPage("recipes")}>Back</button>
       </div>
     );
   }

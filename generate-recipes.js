@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const recipesDir = path.join(__dirname, "recipes");
+const recipesDir = path.join(__dirname, "../recipes");
 const outputFile = path.join(__dirname, "src", "recipes.json");
 
 // Read all PDFs in the folder

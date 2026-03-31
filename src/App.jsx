@@ -1,307 +1,273 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import * as pdfjsLib from "pdfjs-dist/build/pdf";
-import pdfjsWorker from "pdfjs-dist/build/pdf.worker?url";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.entry";
 import { useSwipeable } from "react-swipeable";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
-const beepUrl = "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg";
-
-// ---------- Card ----------
-function RecipeCard({ recipe, index, onOpen, onDelete, onEdit, styles }) {
-  const swipe = useSwipeable({ onSwipedLeft: () => onDelete(index) });
-
-  return (
-    <div {...swipe} style={styles.card}>
-      <div style={styles.recipeTitle}>{recipe.name}</div>
-      <button style={styles.primaryButton} onClick={() => onOpen(index)}>
-        Open Recipe
-      </button>
-      <div style={styles.row}>
-        <button style={styles.edit} onClick={() => onEdit(index)}>✏️</button>
-        <button style={styles.delete} onClick={() => onDelete(index)}>🗑</button>
-      </div>
-    </div>
-  );
-}
-
-// ---------- App ----------
 export default function App() {
-  const [page, setPage] = useState("home");
-  const [recipes, setRecipes] = useState(JSON.parse(localStorage.getItem("recipes") || "[]"));
-  const [currentRecipe, setCurrentRecipe] = useState(null);
-  const [newRecipe, setNewRecipe] = useState({ name: "", ingredients: [], steps: [] });
-  const [editIndex, setEditIndex] = useState(null);
-  const [apiKey, setApiKey] = useState(localStorage.getItem("key") || "");
+  // Theme toggle
   const [dark, setDark] = useState(false);
-  const [toast, setToast] = useState("");
-  const [timers, setTimers] = useState({});
-  const [checked, setChecked] = useState({});
 
-  const styles = getStyles(dark);
+  // Pages
+  const [page, setPage] = useState("home");
 
-  useEffect(() => {
-    localStorage.setItem("recipes", JSON.stringify(recipes));
-    localStorage.setItem("key", apiKey);
-  }, [recipes, apiKey]);
+  // Recipes
+  const [recipes, setRecipes] = useState(() => {
+    const saved = localStorage.getItem("recipes");
+    return saved ? JSON.parse(saved) : [];
+  });
 
-  useEffect(() => {
-    if (toast) setTimeout(() => setToast(""), 2500);
-  }, [toast]);
+  const [currentRecipe, setCurrentRecipe] = useState(null);
 
-  // ---------- PDF ----------
-  const handlePDF = (file) => {
+  // Fullscreen cooking mode
+  const [fullscreen, setFullscreen] = useState(false);
+
+  // Timer refs
+  const timerRefs = useRef({});
+
+  // Checked ingredients
+  const [checkedIngredients, setCheckedIngredients] = useState({});
+
+  // Meal plan (optional)
+  const [mealPlan, setMealPlan] = useState({});
+
+  // PDF / new recipe
+  const [newRecipeName, setNewRecipeName] = useState("");
+  const [newRecipeFile, setNewRecipeFile] = useState(null);
+
+  // Favorite
+  const toggleFavorite = (i) => {
+    const updated = [...recipes];
+    updated[i].favorite = !updated[i].favorite;
+    setRecipes(updated);
+    localStorage.setItem("recipes", JSON.stringify(updated));
+  };
+
+  // Delete recipe
+  const deleteRecipe = (i) => {
+    const updated = [...recipes];
+    updated.splice(i, 1);
+    setRecipes(updated);
+    localStorage.setItem("recipes", JSON.stringify(updated));
+  };
+
+  // Edit recipe
+  const editRecipe = (i) => {
+    const recipe = recipes[i];
+    setNewRecipeName(recipe.name);
+    setPage("add");
+    setCurrentRecipe(recipe);
+  };
+
+  // Swipe handlers
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: (ev) => {
+      if (ev.event.target.dataset.index) deleteRecipe(ev.event.target.dataset.index);
+    },
+    preventDefaultTouchmoveEvent: true,
+    trackMouse: true,
+  });
+
+  // OpenAI API Key (set in Vercel environment variable VITE_OPENAI_KEY)
+  const apiKey = import.meta.env.VITE_OPENAI_KEY;
+
+  // Import PDF recipe
+  const handlePDFUpload = async (e) => {
+    const file = e.target.files[0];
     if (!file) return;
-    if (!apiKey) return setToast("Enter API key");
 
     const reader = new FileReader();
     reader.onload = async function () {
-      const pdf = await pdfjsLib.getDocument(new Uint8Array(this.result)).promise;
-      let text = "";
-
+      const typedArray = new Uint8Array(this.result);
+      const pdf = await pdfjsLib.getDocument(typedArray).promise;
+      let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
-        const p = await pdf.getPage(i);
-        const c = await p.getTextContent();
-        text += c.items.map(x => x.str).join(" ");
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const strings = content.items.map((item) => item.str);
+        fullText += strings.join(" ") + " ";
       }
 
-      callAI(text);
+      // Call OpenAI to parse ingredients/steps
+      try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-3.5-turbo",
+            messages: [
+              {
+                role: "user",
+                content: `
+Extract a recipe from this text:
+
+${fullText}
+
+Return ONLY JSON in this format:
+{
+"name": "Recipe Name",
+"ingredients": ["ingredient 1", "ingredient 2"],
+"steps": [{"text":"step 1","time":0},{"text":"step 2","time":0}]
+}
+`,
+              },
+            ],
+          }),
+        });
+        const data = await response.json();
+        const parsed = JSON.parse(data.choices[0].message.content);
+
+        const updatedRecipes = [...recipes, parsed];
+        setRecipes(updatedRecipes);
+        localStorage.setItem("recipes", JSON.stringify(updatedRecipes));
+        alert("Recipe imported successfully!");
+      } catch (err) {
+        console.error("PDF/AI error:", err);
+        alert("Failed to import recipe. Check console.");
+      }
     };
     reader.readAsArrayBuffer(file);
   };
 
-  const callAI = async (text) => {
-    try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: "Return ONLY JSON." },
-            {
-              role: "user",
-              content: `Extract recipe JSON: { "name":"Recipe","ingredients":[{"name":"item","amount":"qty"}],"steps":[{"text":"step","time":0}] } TEXT: ${text}`
-            }
-          ]
-        })
-      });
-
-      const data = await res.json();
-      const match = data.choices?.[0]?.message?.content?.match(/\{[\s\S]*\}/);
-
-      if (!match) throw new Error();
-
-      const parsed = JSON.parse(match[0]);
-
-      setNewRecipe(parsed);
-      setPage("add");
-      setToast("Imported ✅");
-    } catch {
-      setToast("Parse failed ❌");
-    }
-  };
-
-  // ---------- Save ----------
+  // Save new recipe manually
   const saveRecipe = () => {
-    if (!newRecipe.name) return setToast("Add name");
-
-    if (editIndex !== null) {
-      const copy = [...recipes];
-      copy[editIndex] = newRecipe;
-      setRecipes(copy);
-      setEditIndex(null);
-    } else {
-      setRecipes([...recipes, newRecipe]);
-    }
-
-    setNewRecipe({ name: "", ingredients: [], steps: [] });
+    if (!newRecipeName) return;
+    const newR = currentRecipe
+      ? { ...currentRecipe, name: newRecipeName }
+      : { name: newRecipeName, ingredients: [], steps: [] };
+    const updated = currentRecipe
+      ? recipes.map((r) => (r === currentRecipe ? newR : r))
+      : [...recipes, newR];
+    setRecipes(updated);
+    localStorage.setItem("recipes", JSON.stringify(updated));
     setPage("recipes");
+    setCurrentRecipe(null);
+    setNewRecipeName("");
   };
 
-  // ---------- Timer ----------
-  const startTimer = (i, t) => {
-    if (!t || timers[i]) return;
-
-    const id = setInterval(() => {
-      setTimers(prev => {
-        const v = prev[i] - 1;
-        if (v <= 0) {
-          clearInterval(id);
-          new Audio(beepUrl).play();
-          const copy = { ...prev };
-          delete copy[i];
-          return copy;
-        }
-        return { ...prev, [i]: v };
-      });
-    }, 1000);
-
-    setTimers(p => ({ ...p, [i]: t }));
+  const startTimer = (stepIndex, duration) => {
+    clearTimeout(timerRefs.current[stepIndex]);
+    timerRefs.current[stepIndex] = setTimeout(() => alert(`Step ${stepIndex + 1} done!`), duration);
   };
 
-  // ---------- HOME ----------
-  if (page === "home") {
+  // Toggle ingredient
+  const toggleIngredient = (i) => {
+    setCheckedIngredients({ ...checkedIngredients, [i]: !checkedIngredients[i] });
+  };
+
+  // Save theme
+  useEffect(() => {
+    localStorage.setItem("theme", dark ? "dark" : "light");
+  }, [dark]);
+
+  // Load theme
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved) setDark(saved === "dark");
+  }, []);
+
+  const styles = {
+    container: {
+      padding: 10,
+      fontFamily: "sans-serif",
+      background: dark ? "#1e1e1e" : "#f8f8f8",
+      color: dark ? "white" : "#111",
+      minHeight: "100vh",
+    },
+    button: { margin: 5, padding: 10, background: "green", color: "white", border: "none", borderRadius: 5 },
+    input: { width: "100%", padding: 8, margin: 5 },
+    recipeCard: {
+      margin: 10,
+      padding: 10,
+      background: dark ? "#333" : "#fff",
+      borderRadius: 10,
+      boxShadow: "0 2px 5px rgba(0,0,0,0.2)",
+    },
+    ingredient: { display: "block", marginBottom: 5 },
+  };
+
+  // --- PAGE RENDERING ---
+  if (page === "home")
     return (
       <div style={styles.container}>
-        <h1 style={styles.title}>Cooking App</h1>
-
-        {toast && <div style={styles.toast}>{toast}</div>}
-
+        <h1>Cooking App</h1>
         <button style={styles.button} onClick={() => setPage("recipes")}>
           Recipes
         </button>
-
         <button style={styles.button} onClick={() => setPage("add")}>
           Add Recipe
         </button>
-
-        <input
-          style={styles.input}
-          placeholder="OpenAI API Key"
-          type="password"
-          value={apiKey}
-          onChange={e => setApiKey(e.target.value)}
-        />
-
         <button style={styles.button} onClick={() => setDark(!dark)}>
           Toggle Theme
         </button>
       </div>
     );
-  }
 
-  // ---------- RECIPES ----------
-  if (page === "recipes") {
+  if (page === "recipes")
     return (
       <div style={styles.container}>
-        <h1 style={styles.title}>Recipes</h1>
-
-        {recipes.length === 0 && <p>No recipes yet</p>}
-
+        <h2>Saved Recipes</h2>
         {recipes.map((r, i) => (
-          <RecipeCard
-            key={i}
-            recipe={r}
-            index={i}
-            onOpen={(i) => {
-              setCurrentRecipe(recipes[i]);
-              setPage("cook");
-            }}
-            onDelete={(i) => {
-              setRecipes(recipes.filter((_, x) => x !== i));
-            }}
-            onEdit={(i) => {
-              setNewRecipe(recipes[i]);
-              setEditIndex(i);
-              setPage("add");
-            }}
-            styles={styles}
-          />
+          <div key={i} style={styles.recipeCard} {...swipeHandlers} data-index={i}>
+            <h3>{r.name}</h3>
+            <button style={styles.button} onClick={() => { setCurrentRecipe(r); setPage("cook"); }}>
+              Open Recipe
+            </button>
+            <button style={{ ...styles.button, background: "orange" }} onClick={() => editRecipe(i)}>
+              Edit
+            </button>
+            <button style={{ ...styles.button, background: "red" }} onClick={() => deleteRecipe(i)}>
+              Delete
+            </button>
+            <button style={{ ...styles.button, background: r.favorite ? "gold" : "gray" }} onClick={() => toggleFavorite(i)}>
+              ☆
+            </button>
+          </div>
         ))}
-
-        <button style={styles.button} onClick={() => setPage("home")}>
-          Back
-        </button>
       </div>
     );
-  }
 
-  // ---------- ADD ----------
-  if (page === "add") {
+  if (page === "add")
     return (
       <div style={styles.container}>
-        <h1 style={styles.title}>Add Recipe</h1>
-
-        <input
-          style={styles.input}
-          placeholder="Recipe name"
-          value={newRecipe.name || ""}
-          onChange={e => setNewRecipe({ ...newRecipe, name: e.target.value })}
-        />
-
-        <input type="file" accept="application/pdf" onChange={e => handlePDF(e.target.files[0])} />
-
+        <h2>Add Recipe</h2>
+        <input style={styles.input} placeholder="Recipe Name" value={newRecipeName} onChange={(e) => setNewRecipeName(e.target.value)} />
+        <input type="file" onChange={handlePDFUpload} />
         <button style={styles.button} onClick={saveRecipe}>
           Save
         </button>
-
         <button style={styles.button} onClick={() => setPage("home")}>
           Back
         </button>
       </div>
     );
-  }
 
-  // ---------- COOK ----------
-  if (page === "cook" && currentRecipe) {
+  if (page === "cook" && currentRecipe)
     return (
       <div style={styles.container}>
-        <h1 style={styles.title}>{currentRecipe.name}</h1>
-
+        <h2>{currentRecipe.name}</h2>
         <h3>Ingredients</h3>
-        {(currentRecipe.ingredients || []).map((ing, i) => (
-          <div key={i}>
-            <input
-              type="checkbox"
-              checked={checked[i] || false}
-              onChange={() => setChecked({ ...checked, [i]: !checked[i] })}
-            />
-            {ing.name} {ing.amount || ""}
-          </div>
+        {currentRecipe.ingredients.map((ing, i) => (
+          <label key={i} style={styles.ingredient}>
+            <input type="checkbox" checked={checkedIngredients[i] || false} onChange={() => toggleIngredient(i)} /> {ing}
+          </label>
         ))}
-
         <h3>Steps</h3>
-        {(currentRecipe.steps || []).map((s, i) => (
-          <div key={i} style={styles.step}>
-            {s.text}
-            {s.time > 0 && (
-              <>
-                <button onClick={() => startTimer(i, s.time)}>Start</button>
-                {timers[i] && <span> ⏱ {timers[i]}</span>}
-              </>
-            )}
+        {currentRecipe.steps.map((s, i) => (
+          <div key={i}>
+            <p>{s.text}</p>
+            <button onClick={() => startTimer(i, s.time)}>Start Timer</button>
           </div>
         ))}
-
         <button style={styles.button} onClick={() => setPage("recipes")}>
           Back
         </button>
       </div>
     );
-  }
 
-  return <div>Loading...</div>;
+  return <div style={styles.container}>Unknown Page</div>;
 }
-
-// ---------- Styles ----------
-const getStyles = (dark) => ({
-  container: {
-    maxWidth: "500px",
-    margin: "auto",
-    padding: "20px",
-    fontFamily: "sans-serif",
-    background: dark ? "#111" : "#fff",
-    color: dark ? "#fff" : "#000",
-    minHeight: "100vh"
-  },
-  title: { textAlign: "center" },
-  card: {
-    background: dark ? "#222" : "#f5f5f5",
-    padding: "15px",
-    borderRadius: "12px",
-    marginBottom: "15px"
-  },
-  recipeTitle: { textAlign: "center", marginBottom: "10px" },
-  primaryButton: { width: "100%", padding: "10px", marginBottom: "10px" },
-  row: { display: "flex", gap: "10px" },
-  edit: { flex: 1 },
-  delete: { flex: 1 },
-  button: { width: "100%", padding: "10px", marginTop: "10px" },
-  input: { width: "100%", padding: "10px", marginTop: "10px" },
-  toast: { background: "green", color: "white", padding: "10px", marginBottom: "10px" },
-  step: { marginBottom: "10px", padding: "10px", borderRadius: "8px", background: dark ? "#333" : "#eee" }
-});
